@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# scdl — paste a SoundCloud link, pick a format, get the audio.
+#
+#   scdl                      interactive (grabs a SoundCloud link from the clipboard if there is one)
+#   scdl <url>                skip the paste step
+#   scdl <url> <format>       no prompts: format = best | mp3 | wav | flac
+#
+# Files go to ~/Music/SoundCloud (override with SCDL_DIR).
+
+set -uo pipefail
+
+OUT_DIR="${SCDL_DIR:-$HOME/Music/SoundCloud}"
+ORANGE="#ff5500"
+DIM="245"
+TMP="$(mktemp -d)"
+
+cleanup() { printf '\033[?25h'; rm -rf "$TMP"; }
+trap cleanup EXIT
+trap 'echo; exit 130' INT
+
+for bin in yt-dlp ffmpeg gum jq; do
+  command -v "$bin" >/dev/null || { echo "scdl: '$bin' not found — brew install $bin"; exit 1; }
+done
+
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
+
+is_sc_url() { [[ "$1" =~ ^https?://((www|m|on)\.)?soundcloud\.com/.+ ]]; }
+
+# Drop ?si=…&utm_… share junk (and ?in=playlist, so a track link stays a track).
+clean_url() { local u="${1%%\?*}"; echo "${u%%#*}"; }
+
+say()  { gum style --foreground "$DIM" "$@"; }
+fail() { gum style --foreground 196 "✗ $*"; }
+
+banner() {
+  gum style --border rounded --border-foreground "$ORANGE" --padding "0 2" --margin "1 0 0 0" \
+    "$(gum style --foreground "$ORANGE" --bold '☁  scdl')" \
+    "$(gum style --foreground "$DIM" 'paste · pick · download')"
+}
+
+ask_url() {
+  local clip
+  clip="$(pbpaste 2>/dev/null | head -n1 | tr -d '[:space:]')"
+  if is_sc_url "$clip" && gum confirm --prompt.foreground "$ORANGE" --selected.background "$ORANGE" \
+       "Use the link on your clipboard?"$'\n'"$(clean_url "$clip")"; then
+    clean_url "$clip"; return
+  fi
+  while true; do
+    local u
+    u="$(gum input --prompt "🔗 " --prompt.foreground "$ORANGE" --cursor.foreground "$ORANGE" \
+          --placeholder "Paste a SoundCloud link…" --width 80)" || return 1
+    u="$(echo "$u" | tr -d '[:space:]')"
+    [ -z "$u" ] && return 1
+    if is_sc_url "$u"; then clean_url "$u"; return; fi
+    fail "That doesn't look like a SoundCloud link. Try again (Esc to quit)."
+  done
+}
+
+ask_format() {
+  local pick
+  pick="$(gum choose --header "Format" --header.foreground "$ORANGE" \
+            --cursor.foreground "$ORANGE" --selected.foreground "$ORANGE" \
+            "best   original audio, no re-encode (recommended)" \
+            "mp3    plays everywhere, cover art + tags" \
+            "wav    uncompressed, for DAWs / DJ software" \
+            "flac   lossless container, cover art + tags")" || return 1
+  echo "${pick%% *}"
+}
+
+# Bar: ████████░░░░  42%  label
+draw_bar() {
+  local pct=$1 label=$2 w=28 fill rest
+  local f=$(( pct * w / 100 ))
+  printf -v fill '%*s' "$f" '';        fill="${fill// /█}"
+  printf -v rest '%*s' $(( w - f )) ''; rest="${rest// /░}"
+  printf '\r\033[K  \033[38;5;202m%s\033[38;5;238m%s\033[0m %3d%%  \033[38;5;245m%s\033[0m' \
+    "$fill" "$rest" "$pct" "$label"
+}
+
+download() {
+  local url=$1 fmt=$2 is_list=$3 out_tmpl args
+  if [ "$is_list" = 1 ]; then
+    out_tmpl="$OUT_DIR/%(playlist_title)s/%(playlist_index)02d - %(title)s.%(ext)s"
+  else
+    out_tmpl="$OUT_DIR/%(uploader)s - %(title)s.%(ext)s"
+  fi
+
+  args=(-x -q --progress --newline --color never --no-warnings
+        --embed-metadata -o "$out_tmpl"
+        --print-to-file after_move:filepath "$TMP/files"
+        --progress-template 'download:DL|%(info.playlist_index|)s|%(info.n_entries|)s|%(progress.downloaded_bytes|0)s|%(progress.total_bytes,progress.total_bytes_estimate|0)s|%(info.title)s'
+        --progress-template 'postprocess:PP|%(progress.postprocessor)s|%(progress.status)s')
+  case "$fmt" in
+    mp3)  args+=(--audio-format mp3 --audio-quality 0 --embed-thumbnail --convert-thumbnails jpg) ;;
+    wav)  args+=(--audio-format wav) ;;
+    flac) args+=(--audio-format flac --embed-thumbnail --convert-thumbnails jpg) ;;
+    *)    args+=(--embed-thumbnail --convert-thumbnails jpg) ;;
+  esac
+
+  mkdir -p "$OUT_DIR"; : > "$TMP/files"
+  printf '\033[?25l'
+  yt-dlp "${args[@]}" "$url" 2> "$TMP/err" | while IFS='|' read -r tag a b c d title; do
+    case "$tag" in
+      DL)
+        local pct label=""
+        pct=$(awk -v d="$c" -v t="$d" 'BEGIN { p = (t > 0) ? int(d * 100 / t) : 0; print (p > 100 ? 100 : p) }')
+        [ -n "$a" ] && [ -n "$b" ] && label="[$a/$b] "
+        draw_bar "$pct" "${label}${title:0:40}"
+        ;;
+      PP)
+        [ "$b" = "started" ] || continue
+        case "$a" in
+          ExtractAudio|FFmpegExtractAudio) draw_bar 100 "converting…" ;;
+          EmbedThumbnail)                  draw_bar 100 "adding cover art…" ;;
+          Metadata|FFmpegMetadata)         draw_bar 100 "tagging…" ;;
+        esac
+        ;;
+    esac
+  done
+  local status=${PIPESTATUS[0]}
+  printf '\r\033[K\033[?25h'
+  return "$status"
+}
+
+run_once() {
+  local url=$1 fmt=${2:-} info title artist meta is_list=0
+
+  gum spin --spinner dot --spinner.foreground "$ORANGE" --title "Looking it up…" -- \
+    bash -c 'yt-dlp -J --flat-playlist --no-warnings "$1" > "$2" 2> "$3"' _ "$url" "$TMP/info.json" "$TMP/err"
+  if [ ! -s "$TMP/info.json" ]; then
+    fail "Couldn't load that link."
+    say "$(grep -m1 ERROR "$TMP/err" | sed 's/^ERROR: //')"
+    return 1
+  fi
+
+  info="$(cat "$TMP/info.json")"
+  title="$(jq -r '.title // "Untitled"' <<<"$info")"
+  artist="$(jq -r '.uploader // .channel // "Unknown artist"' <<<"$info")"
+  if [ "$(jq -r '._type // "video"' <<<"$info")" = "playlist" ]; then
+    is_list=1
+    meta="$artist · $(jq -r '(.entries // []) | length' <<<"$info") tracks"
+  else
+    meta="$artist · $(jq -r '.duration_string // "?"' <<<"$info")"
+  fi
+
+  gum style --border rounded --border-foreground 238 --padding "0 2" --width 64 \
+    "$(gum style --bold "$title")" "$(gum style --foreground "$DIM" "$meta")"
+
+  [ -z "$fmt" ] && { fmt="$(ask_format)" || return 1; }
+
+  if ! download "$url" "$fmt" "$is_list"; then
+    fail "Download failed."
+    say "$(grep -m1 ERROR "$TMP/err" | sed 's/^ERROR: //')"
+    return 1
+  fi
+
+  LAST_FILE="$(tail -n1 "$TMP/files")"
+  local n; n=$(grep -c . "$TMP/files")
+  gum style --foreground "$ORANGE" --bold "✓ Saved $( [ "$n" -gt 1 ] && echo "$n tracks" || echo "${LAST_FILE##*/}")"
+  say "  ${LAST_FILE%/*}"
+  osascript -e "display notification \"${title//\"/\\\"}\" with title \"scdl\" subtitle \"Downloaded\" sound name \"Glass\"" 2>/dev/null
+}
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
+
+# Non-interactive: scdl <url> <format>
+if [ $# -ge 2 ]; then
+  is_sc_url "$1" || { fail "Not a SoundCloud link: $1"; exit 1; }
+  case "$2" in best|mp3|wav|flac) ;; *) fail "Format must be best, mp3, wav or flac"; exit 1 ;; esac
+  run_once "$(clean_url "$1")" "$2"; exit $?
+fi
+
+banner
+url="${1:-}"
+if [ -n "$url" ]; then
+  is_sc_url "$url" || { fail "Not a SoundCloud link: $url"; exit 1; }
+  url="$(clean_url "$url")"
+fi
+
+while true; do
+  if [ -z "$url" ]; then url="$(ask_url)" || exit 0; fi
+  LAST_FILE=""
+  run_once "$url"
+  url=""
+  echo
+  opts=("Download another")
+  [ -n "$LAST_FILE" ] && opts+=("Show in Finder" "Play it")
+  opts+=("Quit")
+  next="$(gum choose --cursor.foreground "$ORANGE" "${opts[@]}")" || exit 0
+  case "$next" in
+    "Show in Finder") open -R "$LAST_FILE"; exit 0 ;;
+    "Play it")        open "$LAST_FILE"; exit 0 ;;
+    "Quit")           exit 0 ;;
+  esac
+done
