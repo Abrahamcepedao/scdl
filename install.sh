@@ -6,8 +6,10 @@ cd "$(dirname "$0")"
 brew install yt-dlp ffmpeg gum jq
 
 mkdir -p "$HOME/.local/bin"
-ln -sf "$PWD/scdl" "$HOME/.local/bin/scdl"
-echo "✓ Linked $HOME/.local/bin/scdl → $PWD/scdl"
+for name in scdl sound; do
+  ln -sf "$PWD/scdl" "$HOME/.local/bin/$name"
+  echo "✓ Linked $HOME/.local/bin/$name → $PWD/scdl"
+done
 
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;

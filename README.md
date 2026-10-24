@@ -9,11 +9,12 @@ Paste a SoundCloud link, pick a format, get the audio. A small terminal app on t
 ./install.sh
 ```
 
-Installs the Homebrew dependencies and symlinks `scdl` into `~/.local/bin`, so edits in this repo are live.
+Installs the Homebrew dependencies and symlinks `scdl` (and the shorter alias `sound`) into `~/.local/bin`, so edits in this repo are live.
 
 ## Use
 
 ```sh
+sound                 # same as scdl
 scdl                  # interactive — picks up a SoundCloud link from the clipboard
 scdl <url>            # skip the paste step
 scdl <url> mp3        # no prompts; format = best | mp3 | wav | flac
