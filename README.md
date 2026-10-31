@@ -24,7 +24,7 @@ scdl <url> mp3        # no prompts; format = best | mp3 | wav | flac
 2. Check the track card, pick a format.
 3. Watch the progress bar; get a notification, then *Show in Finder* / *Play it* / *Download another*.
 
-Files land in `~/Music/SoundCloud/` (set `SCDL_DIR` to change it). Playlists get their own folder with numbered tracks.
+Files land in `~/Documents/dj/`, the Cratekeeper library folder (set `SCDL_DIR` to change it). Playlists get their own folder with numbered tracks.
 
 ## Formats
 

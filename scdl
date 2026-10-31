@@ -5,11 +5,11 @@
 #   scdl <url>                skip the paste step
 #   scdl <url> <format>       no prompts: format = best | mp3 | wav | flac
 #
-# Files go to ~/Music/SoundCloud (override with SCDL_DIR).
+# Files go to ~/Documents/dj, the Cratekeeper library (override with SCDL_DIR).
 
 set -uo pipefail
 
-OUT_DIR="${SCDL_DIR:-$HOME/Music/SoundCloud}"
+OUT_DIR="${SCDL_DIR:-$HOME/Documents/dj}"
 ORANGE="#ff5500"
 DIM="245"
 TMP="$(mktemp -d)"
